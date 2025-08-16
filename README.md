@@ -1,2 +1,1 @@
-# MemExeViz
-C Language Memory Execution Visualizer
+# Memory Execution Visualizer-React
