@@ -207,7 +207,7 @@ int main() {
     int arr[3] = {10, 20, 30};   // [1]
     arr[1] = 25;                  // [2]
     char str[6] = "Hello";        // [3]
-    str[0] = 'J';                 // [4]
+    str[0] = 'M';                 // [4]
     printf("%d %s\\n", arr[1], str); // [5]
     return 0;                     // [6]
 }`;
@@ -234,24 +234,24 @@ int main() {
               { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["H","e","l","l","o","\0"] }
             ] }
           ], heap: [], stdout: "" },
-        { lines: [10], desc: "str[0] = 'J'; → 'Hello' → 'Jello'", stack: [
+        { lines: [10], desc: "str[0] = 'M'; → 'Hello' → 'Mello'", stack: [
             { name: "main", locals: [
               { name: "arr", type: "int[3]", addr: addrArr, size: 12, value: [10,25,30] },
-              { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["J","e","l","l","o","\0"] }
+              { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["M","e","l","l","o","\0"] }
             ] }
           ], heap: [], stdout: "" },
         { lines: [11], desc: "printf → আউটপুটে arr[1] এবং str", stack: [
             { name: "main", locals: [
               { name: "arr", type: "int[3]", addr: addrArr, size: 12, value: [10,25,30] },
-              { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["J","e","l","l","o","\0"] }
+              { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["M","e","l","l","o","\0"] }
             ] }
-          ], heap: [], stdout: "25 Jello\n" },
+          ], heap: [], stdout: "25 Mello\n" },
         { lines: [12], desc: "return 0; → প্রোগ্রাম শেষ", stack: [
             { name: "main", locals: [
               { name: "arr", type: "int[3]", addr: addrArr, size: 12, value: [10,25,30] },
-              { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["J","e","l","l","o","\0"] }
+              { name: "str", type: "char[6]", addr: addrStr, size: 6, value: ["M","e","l","l","o","\0"] }
             ] }
-          ], heap: [], stdout: "25 Jello\n" },
+          ], heap: [], stdout: "25 Mello\n" },
       ];
       return steps;
     }
