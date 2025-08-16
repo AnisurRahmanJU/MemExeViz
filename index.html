@@ -66,8 +66,9 @@ int main() {
     *p = 50;              // [3]
     int *q = (int*)malloc(sizeof(int)); // [4]
     *q = 99;              // [5]
-    free(q);              // [6]
-    return 0;             // [7]
+    printf("%d", x);      // [6]
+    free(q);              // [7]
+    return 0;             // [8]
 }`;
 
     function scriptPointers() {
