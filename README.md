@@ -1,1 +1,1 @@
-# Memory Execution Visualizer-React
+# Memory Execution Visualizer - React
