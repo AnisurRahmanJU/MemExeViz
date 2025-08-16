@@ -1,0 +1,480 @@
+
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ---------- Small helpers ----------
+    function clsx(...xs) { return xs.filter(Boolean).join(" "); }
+
+    function Card({ title, children, className }) {
+      return (
+        <div className={clsx("rounded-2xl shadow-md border border-white/10 bg-zinc-900/60", className)}>
+          {title && (
+            <div className="px-4 py-2 border-b border-white/10 text-sm font-semibold text-zinc-200">
+              {title}
+            </div>
+          )}
+          <div className="p-4">{children}</div>
+        </div>
+      );
+    }
+
+    function Pill({ children }) {
+      return <span className="px-2 py-0.5 rounded-full bg-zinc-700/60 text-xs">{children}</span>;
+    }
+
+    // ---------- Address helpers ----------
+    function toHex(n, pad = 8) { return "0x" + n.toString(16).padStart(pad, "0"); }
+
+    const STACK_TOP = 0x7fffe000; // stack grows down
+    const HEAP_BASE = 0x10000000; // heap grows up
+
+    // ---------- Scenario 1: Pointers & malloc/free ----------
+    const codePointers = `#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    int x = 42;           // [1]
+    int *p = &x;          // [2]
+    *p = 50;              // [3]
+    int *q = (int*)malloc(sizeof(int)); // [4]
+    *q = 99;              // [5]
+    free(q);              // [6]
+    return 0;             // [7]
+}`;
+
+    function scriptPointers() {
+      const addrX = toHex(STACK_TOP - 0x20);
+      const addrP = toHex(STACK_TOP - 0x24);
+      const addrQ = toHex(STACK_TOP - 0x28);
+      const heapInt = HEAP_BASE;
+
+      const steps = [
+        {
+          lines: [5],
+          desc: "প্রোগ্রাম শুরু: main() স্ট্যাক ফ্রেম তৈরি হয়েছে",
+          stack: [ { name: "main", locals: [], retAddr: toHex(0x401000) } ],
+          heap: [],
+          stdout: ""
+        },
+        {
+          lines: [6],
+          desc: "int x = 42; → স্ট্যাকে x এর জন্য 4 বাইট বরাদ্দ ও মান 42",
+          stack: [ {
+            name: "main",
+            locals: [ { name: "x", type: "int", addr: addrX, size: 4, value: 42 } ],
+          }],
+          heap: [],
+          stdout: ""
+        },
+        {
+          lines: [7],
+          desc: "int *p = &x; → p তে x-এর ঠিকানা রাখা হলো",
+          stack: [ {
+            name: "main",
+            locals: [
+              { name: "x", type: "int", addr: addrX, size: 4, value: 42 },
+              { name: "p", type: "int*", addr: addrP, size: 8, value: addrX },
+            ],
+          }],
+          heap: [],
+          stdout: ""
+        },
+        {
+          lines: [8],
+          desc: "*p = 50; → p যে ঠিকানায় ইঙ্গিত করছে (x), সেখানে 50 লেখা হলো",
+          stack: [ {
+            name: "main",
+            locals: [
+              { name: "x", type: "int", addr: addrX, size: 4, value: 50 },
+              { name: "p", type: "int*", addr: addrP, size: 8, value: addrX },
+            ],
+          }],
+          heap: [],
+          stdout: ""
+        },
+        {
+          lines: [9],
+          desc: "int *q = (int*)malloc(sizeof(int)); → হিপে 4 বাইট বরাদ্দ, q তে তার ঠিকানা",
+          stack: [ {
+            name: "main",
+            locals: [
+              { name: "x", type: "int", addr: addrX, size: 4, value: 50 },
+              { name: "p", type: "int*", addr: addrP, size: 8, value: addrX },
+              { name: "q", type: "int*", addr: addrQ, size: 8, value: toHex(heapInt) },
+            ],
+          }],
+          heap: [ {
+            addr: toHex(heapInt), size: 4, bytes: [0,0,0,0], label: "malloc(int)"
+          }],
+          stdout: ""
+        },
+        {
+          lines: [10],
+          desc: "*q = 99; → হিপের নতুন ব্লকে 99 লেখা হলো",
+          stack: [ {
+            name: "main",
+            locals: [
+              { name: "x", type: "int", addr: addrX, size: 4, value: 50 },
+              { name: "p", type: "int*", addr: addrP, size: 8, value: addrX },
+              { name: "q", type: "int*", addr: addrQ, size: 8, value: toHex(heapInt) },
+            ],
+          }],
+          heap: [ {
+            addr: toHex(heapInt), size: 4, bytes: [99,0,0,0], label: "malloc(int)"
+          }],
+          stdout: ""
+        },
+        {
+          lines: [11],
+          desc: "free(q); → হিপ ব্লক মুক্ত, q এর মান অপরিবর্তিত (dangling pointer hazard)",
+          stack: [ {
+            name: "main",
+            locals: [
+              { name: "x", type: "int", addr: addrX, size: 4, value: 50 },
+              { name: "p", type: "int*", addr: addrP, size: 8, value: addrX },
+              { name: "q", type: "int*", addr: addrQ, size: 8, value: toHex(heapInt) },
+            ],
+          }],
+          heap: [ {
+            addr: toHex(heapInt), size: 4, bytes: [null,null,null,null], freed: true, label: "freed"
+          }],
+          stdout: ""
+        },
+        {
+          lines: [12],
+          desc: "return 0; → main ফ্রেম ধ্বংস হবে, প্রোগ্রাম শেষ",
+          stack: [ {
+            name: "main",
+            locals: [
+              { name: "x", type: "int", addr: addrX, size: 4, value: 50 },
+              { name: "p", type: "int*", addr: addrP, size: 8, value: addrX },
+              { name: "q", type: "int*", addr: addrQ, size: 8, value: toHex(heapInt) },
+            ],
+          }],
+          heap: [ { addr: toHex(heapInt), size: 4, bytes: [null,null,null,null], freed: true, label: "freed" } ],
+          stdout: ""
+        },
+      ];
+      return steps;
+    }
+
+    // ---------- Scenario 2: Functions & Recursion (factorial) ----------
+    const codeRecursion = `#include <stdio.h>
+
+int fact(int n) {
+    if (n <= 1) return 1;  // [1]
+    return n * fact(n - 1); // [2]
+}
+
+int main() {
+    int r = fact(3);        // [3]
+    printf("%d\\n", r);      // [4]
+    return 0;               // [5]
+}`;
+
+    function scriptRecursion() {
+      const addrRMain = toHex(STACK_TOP - 0x20);
+
+      const mkFrame = (name, n, base) => ({
+        name,
+        locals: [ { name: name === "main" ? "r" : "n", type: "int", addr: toHex(base), size: 4, value: n } ],
+      });
+
+      const f3 = mkFrame("fact", 3, STACK_TOP - 0x24);
+      const f2 = mkFrame("fact", 2, STACK_TOP - 0x28);
+      const f1 = mkFrame("fact", 1, STACK_TOP - 0x2C);
+
+      const steps = [
+        { lines: [9],  desc: "main শুরু", stack: [ { name: "main", locals: [] } ], heap: [], stdout: "" },
+        { lines: [10], desc: "int r = fact(3); → fact(3) কল", stack: [ { name: "main", locals: [] }, f3 ], heap: [], stdout: "" },
+        { lines: [3],  desc: "fact(3): n<=1 নয় → fact(2)", stack: [ { name: "main", locals: [] }, f3, f2 ], heap: [], stdout: "" },
+        { lines: [3],  desc: "fact(2): n<=1 নয় → fact(1)", stack: [ { name: "main", locals: [] }, f3, f2, f1 ], heap: [], stdout: "" },
+        { lines: [2],  desc: "fact(1): n<=1 → 1 রিটার্ন", stack: [ { name: "main", locals: [] }, f3, f2 ], heap: [], stdout: "" },
+        { lines: [4],  desc: "fact(2): 2 * 1 = 2 রিটার্ন", stack: [ { name: "main", locals: [] }, f3 ], heap: [], stdout: "" },
+        { lines: [4],  desc: "fact(3): 3 * 2 = 6 রিটার্ন", stack: [ { name: "main", locals: [] } ], heap: [], stdout: "" },
+        { lines: [10], desc: "main: r = 6", stack: [ { name: "main", locals: [ { name: "r", type: "int", addr: addrRMain, size: 4, value: 6 } ] } ], heap: [], stdout: "" },
+        { lines: [11], desc: "printf → আউটপুটে 6", stack: [ { name: "main", locals: [ { name: "r", type: "int", addr: addrRMain, size: 4, value: 6 } ] } ], heap: [], stdout: "6\n" },
+        { lines: [12], desc: "return 0; প্রোগ্রাম শেষ", stack: [ { name: "main", locals: [ { name: "r", type: "int", addr: addrRMain, size: 4, value: 6 } ] } ], heap: [], stdout: "6\n" },
+      ];
+      return steps;
+    }
+
+    // ---------- UI panes ----------
+    function CodePane({ code, highlighted }) {
+      const lines = code.split("\n");
+      return (
+        <pre className="text-sm leading-6 whitespace-pre-wrap">
+          {lines.map((ln, idx) => {
+            const n = idx + 1;
+            const isHi = highlighted.includes(n);
+            return (
+              <div key={idx} className={clsx("grid grid-cols-[48px_1fr] gap-3 px-2 rounded-md", isHi && "bg-emerald-900/30 ring-1 ring-emerald-500/50")}>
+                <span className="text-zinc-500 select-none text-right pr-2">{n}</span>
+                <code className="text-zinc-100">{ln}</code>
+              </div>
+            );
+          })}
+        </pre>
+      );
+    }
+
+    function StackView({ frames }) {
+      return (
+        <div className="space-y-3">
+          {(!frames || frames.length === 0) && <div className="text-zinc-400 text-sm">(empty)</div>}
+          {frames && frames.map((f, i) => (
+            <div key={i} className="rounded-xl border border-white/10 bg-zinc-800/60">
+              <div className="px-3 py-2 text-amber-300 text-sm font-semibold flex items-center justify-between">
+                <span>🔁 Stack Frame: {f.name}</span>
+                <Pill>top</Pill>
+              </div>
+              <div className="px-3 pb-3">
+                {(!f.locals || f.locals.length === 0) ? (
+                  <div className="text-zinc-400 text-sm">No locals</div>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-zinc-400">
+                        <th className="text-left font-medium py-1">Name</th>
+                        <th className="text-left font-medium py-1">Type</th>
+                        <th className="text-left font-medium py-1">Addr</th>
+                        <th className="text-left font-medium py-1">Size</th>
+                        <th className="text-left font-medium py-1">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {f.locals.map((v, vi) => (
+                        <tr key={vi} className="border-t border-white/5">
+                          <td className="py-1">{v.name}</td>
+                          <td className="py-1 text-zinc-300">{v.type}</td>
+                          <td className="py-1 text-zinc-400">{v.addr}</td>
+                          <td className="py-1 text-zinc-400">{v.size}</td>
+                          <td className="py-1">{typeof v.value === 'string' ? v.value : String(v.value)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function HeapView({ blocks }) {
+      return (
+        <div className="space-y-3">
+          {(!blocks || blocks.length === 0) && <div className="text-zinc-400 text-sm">(empty)</div>}
+          {blocks && blocks.map((b, i) => (
+            <div key={i} className={clsx("rounded-xl border bg-zinc-800/60", b.freed ? "border-red-500/40" : "border-emerald-500/30")}>
+              <div className={clsx("px-3 py-2 text-sm font-semibold flex items-center justify-between", b.freed ? "text-red-300" : "text-emerald-300")}>
+                <span>🧱 Heap Block @ {b.addr}</span>
+                <Pill>{b.size} bytes</Pill>
+              </div>
+              <div className="px-3 pb-3">
+                <div className="text-zinc-400 text-sm mb-2">{b.label || (b.freed ? "freed" : "allocated")}</div>
+                {b.bytes && (
+                  <div className="grid grid-cols-8 gap-1">
+                    {b.bytes.map((byte, bi) => (
+                      <div key={bi} className={clsx("text-xs px-2 py-1 rounded-md border", b.freed ? "border-red-500/30 bg-red-900/20" : "border-white/10 bg-zinc-900/60")}>
+                        {byte === null ? "--" : String(byte)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function ConsoleView({ text }) {
+      return (
+        <div className="h-32 overflow-auto rounded-xl border border-white/10 bg-black/70 p-3 font-mono text-sm">
+          {text || <span className="text-zinc-500">(no output)</span>}
+        </div>
+      );
+    }
+
+    // ---------- Main Component ----------
+    function CMemoryVisualizer() {
+      const [tab, setTab] = useState("pointers");
+      const scenario = useMemo(() => {
+        switch (tab) {
+          case "pointers":
+            return { name: "Pointers & malloc/free", code: codePointers, steps: scriptPointers() };
+          case "recursion":
+            return { name: "Functions & Recursion", code: codeRecursion, steps: scriptRecursion() };
+          case "arrays":
+            return { name: "Arrays & Strings (Coming Soon)", code: "// Coming next: arrays, strings, pointer arithmetic", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          case "structs":
+            return { name: "Structs & Pointer-to-Struct (Coming Soon)", code: "// Coming next: struct, -> operator, nested structs", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          case "files":
+            return { name: "File I/O (Simulated) (Coming Soon)", code: "// Coming next: fopen, fread/fwrite, fclose (simulated)", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          default:
+            return { name: "", code: "", steps: [] };
+        }
+      }, [tab]);
+
+      const [i, setI] = useState(0);
+      const step = scenario.steps[i] ?? scenario.steps[scenario.steps.length - 1];
+      const max = scenario.steps.length - 1;
+      const [auto, setAuto] = useState(false);
+      const timer = useRef(null);
+
+      useEffect(() => { setI(0); setAuto(false); }, [tab]);
+      useEffect(() => {
+        if (!auto) return;
+        timer.current = setTimeout(() => setI(prev => Math.min(prev + 1, max)), 1100);
+        return () => clearTimeout(timer.current);
+      }, [auto, i, max]);
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-zinc-950 to-black text-zinc-100 p-4 md:p-8">
+          <div className="max-w-6xl mx-auto space-y-4">
+            <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+              <div>
+                <h1 className="text-2xl md:text-3xl font-bold"> Memory Execution Visualizer - React</h1>
+                <p className="text-zinc-400 text-sm">বাংলা ব্যাখ্যাসহ স্ট্যাক, হিপ, পয়েন্টার, ফাংশন কল, ও আউটপুট</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["pointers", "Pointers"],
+                  ["recursion", "Recursion"],
+                  ["arrays", "Arrays/Strings"],
+                  ["structs", "Structs"],
+                  ["files", "File I/O"],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setTab(key)}
+                    className={clsx(
+                      "px-3 py-1.5 rounded-xl text-sm border",
+                      tab === key ? "bg-emerald-600 border-emerald-500" : "bg-zinc-800 border-white/10 hover:bg-zinc-700"
+                    )}
+                  >{label}</button>
+                ))}
+              </div>
+            </header>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <Card title={`${scenario.name} – Code`}>
+                <CodePane code={scenario.code} highlighted={step.lines || []} />
+              </Card>
+
+              <div className="grid gap-4">
+                <Card title="Current Step (Bangla explanation)">
+                  <div className="text-sm leading-6">{step.desc}</div>
+                </Card>
+                <Card title="Console Output">
+                  <ConsoleView text={step.stdout} />
+                </Card>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <Card title="Stack (Call Frames)">
+                <StackView frames={step.stack || []} />
+              </Card>
+              <Card title="Heap (Dynamic Memory)">
+                <HeapView blocks={step.heap || []} />
+              </Card>
+            </div>
+
+            <Card>
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => setI(0)} className="px-3 py-1.5 rounded-xl bg-zinc-800 border border-white/10 hover:bg-zinc-700">⟲ Reset</button>
+                <button onClick={() => setI(v => Math.max(0, v - 1))} className="px-3 py-1.5 rounded-xl bg-zinc-800 border border-white/10 hover:bg-zinc-700">◀ Prev</button>
+                <button onClick={() => setI(v => Math.min(max, v + 1))} className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500">Next ▶</button>
+                <button onClick={() => setAuto(a => !a)} className={clsx("px-3 py-1.5 rounded-xl border", auto ? "bg-emerald-700 border-emerald-600" : "bg-zinc-800 border-white/10 hover:bg-zinc-700")}>{auto ? "■ Stop Auto" : "▶ Auto Play"}</button>
+                <div className="text-sm text-zinc-400 ml-2">Step { (Math.min(i, max) + 1) } / { (max + 1) }</div>
+              </div>
+            </Card>
+
+            <Card title="How to extend (Roadmap)">
+              <ol className="list-decimal pl-5 space-y-1 text-sm text-zinc-300">
+                <li><strong>Parser/Frontend:</strong> clang JSON trace বা WASM ইন্সট্রুমেন্টেশন থেকে স্টেপ জেনারেট।</li>
+                <li><strong>Pointer arithmetic:</strong> arrays/strings এ & এবং * অপারেশন, pointer + k, k[p] ভিউ।</li>
+                <li><strong>Structs:</strong> nested struct layout, padding/align, &obj, obj.field, p-&gt;field visualization।</li>
+                <li><strong>Memory safety:</strong> use-after-free, double free, buffer overflow (স্যান্ডবক্স ডেমো) হাইলাইট।</li>
+                <li><strong>Breakpoints & Watches:</strong> নির্দিষ্ট লাইন/ভ্যারিয়েবল পর্যবেক্ষণ, diff highlighting।</li>
+                <li><strong>I/O model:</strong> stdin buffer, fread/fwrite simulation, file descriptor table।</li>
+              </ol>
+            </Card>
+
+            <footer className="text-center text-xs text-zinc-500 py-4">
+              Built by Md. Anisur Rahman – C Full Memory Visualizer (Prototype)
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<CMemoryVisualizer />);
+    
+  // ---------- Main Component ----------
+    function CMemoryVisualizer() {
+      const [tab, setTab] = useState("pointers");
+      const scenario = useMemo(() => {
+        switch (tab) {
+          case "pointers":
+            return { name: "Pointers & malloc/free", code: codePointers, steps: scriptPointers() };
+          case "recursion":
+            return { name: "Functions & Recursion", code: codeRecursion, steps: scriptRecursion() };
+          case "arrays":
+            return { name: "Arrays & Strings (Coming Soon)", code: "// Coming next: arrays, strings, pointer arithmetic", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          case "structs":
+            return { name: "Structs & Pointer-to-Struct (Coming Soon)", code: "// Coming next: struct, -> operator, nested structs", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          case "files":
+            return { name: "File I/O (Simulated) (Coming Soon)", code: "// Coming next: fopen, fread/fwrite, fclose (simulated)", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          default:
+            return { name: "", code: "", steps: [] };
+        }
+      }, [tab]);
+
+      const [i, setI] = useState(0);
+      const step = scenario.steps[i] ?? scenario.steps[scenario.steps.length - 1];
+      const max = scenario.steps.length - 1;
+      const [auto, setAuto] = useState(false);
+      const timer = useRef(null);
+
+      useEffect(() => { setI(0); setAuto(false); }, [tab]);
+      useEffect(() => {
+        if (!auto) return;
+        timer.current = setTimeout(() => setI(prev => Math.min(prev + 1, max)), 1100);
+        return () => clearTimeout(timer.current);
+      }, [auto, i, max]);
+      // ---------- Main Component ----------
+    function CMemoryVisualizer() {
+      const [tab, setTab] = useState("pointers");
+      const scenario = useMemo(() => {
+        switch (tab) {
+          case "pointers":
+            return { name: "Pointers & malloc/free", code: codePointers, steps: scriptPointers() };
+          case "recursion":
+            return { name: "Functions & Recursion", code: codeRecursion, steps: scriptRecursion() };
+          case "arrays":
+            return { name: "Arrays & Strings (Coming Soon)", code: "// Coming next: arrays, strings, pointer arithmetic", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          case "structs":
+            return { name: "Structs & Pointer-to-Struct (Coming Soon)", code: "// Coming next: struct, -> operator, nested structs", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          case "files":
+            return { name: "File I/O (Simulated) (Coming Soon)", code: "// Coming next: fopen, fread/fwrite, fclose (simulated)", steps: [ { lines: [], desc: "মডিউল প্রস্তুত হচ্ছে…", stack: [], heap: [], stdout: "" } ] };
+          default:
+            return { name: "", code: "", steps: [] };
+        }
+      }, [tab]);
+
+      const [i, setI] = useState(0);
+      const step = scenario.steps[i] ?? scenario.steps[scenario.steps.length - 1];
+      const max = scenario.steps.length - 1;
+      const [auto, setAuto] = useState(false);
+      const timer = useRef(null);
+
+      useEffect(() => { setI(0); setAuto(false); }, [tab]);
+      useEffect(() => {
+        if (!auto) return;
+        timer.current = setTimeout(() => setI(prev => Math.min(prev + 1, max)), 1100);
+        return () => clearTimeout(timer.current);
+      }, [auto, i, max]);
