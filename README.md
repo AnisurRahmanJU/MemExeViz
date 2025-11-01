@@ -56,7 +56,7 @@ To run the tool locally:
 
 If you’d like to contribute to this project:
 
-- Fork the repository.
+- Fork the repository and contribute.
 
 
 ## License
