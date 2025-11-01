@@ -10,10 +10,6 @@
 * Interactive and responsive UI to guide users through memory execution.
 * Detailed view of stack frames, memory addresses, and variable data.
 
-## Demo
-
-Visit the live tool at [Try it out](https://anisurrahmanju.github.io/MemExeViz/) 
-
 
 ## Usage
 
